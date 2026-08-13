@@ -3,25 +3,19 @@
 ## Functional
 - User should be able to create a poll
 - User should be able to answer a poll
-    - User should be able to answer once per poll
-- User should be able to view a poll result in real-time
+    - Default expected behavior is 1 vote per user; however, since there is no authentication/user identification system, the system does not enforce or block multiple submissions per user for now
+- User should be able to view a poll result (not real time requirement for now)
 - User should be able to close a poll
 
-Extension: Poll can have multiple types - MCQ, open ended. For simplicity, now we do open ended string.
-
-Note: this design is a high level one and for the core of the application. As such, I am choosing to ignore functional requirements like creating a user, authN, authZ, sharing/searching for poll etc
+Extension: Poll can have multiple types - MCQ (single or multiople selections), open ended. For simplicity, we do open ended string for now.
 
 ## Non Functional
-- System should be highly available for answering polls, over strong consistency
-- System should be real-time, low latency for live poll
-- System should scale to support 10K concurrent polls
-    - est: 30 users per poll so 300K concurrent users
+- System should be highly available for answering polls, NOT choosing strong consistency
 - System should be secure and rate limited
 
 # Core Entities
-- User: represents user of a system, either the one who created the poll or is answering a poll
 - Poll: represents the poll itself
-- Answer: represent an answer to a poll, a poll has mutliple answers, answer is submitted by a user
+- Answer: represents an answer to a poll, a poll can have multiple answers submitted by users
 
 # API
 - POST /api/v1/polls
@@ -44,11 +38,14 @@ Response:
 }
 ``` 
 
+---
+
 - GET /api/v1/polls/:pollId
 
 Response:
+- 404 Not Found
+- 200 OK
 ```json
-200 OK
 {
     pollId: UUID,
     question: string,
@@ -57,36 +54,37 @@ Response:
 }
 ```
 
-- PATCH /api/v1/polls/:pollId/close
+---
 
-Note: userId taken from JWT. Only the user who created the poll is authorized to close it.
+- PATCH /api/v1/polls/:pollId/close
 
 Response:
 - 200 OK
-- 403 Forbidden -> user is not the poll creator
 - 404 Not Found -> unable to find poll
 - 409 Conflict -> poll is already closed
+
+---
 
 - POST /api/v1/polls/:pollId/answers
 
 Payload:
-```JSON
+```json
 {
     answer: string
 }
 ```
-Note: userId taken from JWT
 
 Response: 
 - 201 Created
 - 403 Forbidden -> poll closed
 - 404 Not found -> unable to find poll
-- 409 Conflict -> user has already answered this poll
+
+---
 
 - GET /api/v1/polls/:pollId/answers?limit={}&offset={}
 
 Response: 
-```JSON
+```json
 200 OK
 {
     answers: Array of {
@@ -99,42 +97,34 @@ Response:
 [Link to design](https://drive.google.com/file/d/17EK7KgMs6o7cbQXLJoXQKqEQSVwmnoLg/view?usp=sharing)
 
 ## Database tables
-User
-- id: UUID PK
-- name: string NON NULL
-- email: string NON NULL
-- createdAt: Date NON NULL
-- updatedAt: Date
-
 Poll
 - id: UUID PK
 - question: string NON NULL
 - description: string
 - status: ENUM('active', 'closed') NON NULL DEFAULT 'active'
-- createdBy: UUID FK User
 - createdAt: Date NON NULL
 - updatedAt: Date
 
-> Polls are created with a default status of `'active'`. Only the user who created the poll (`createdBy`) can close it by calling `PATCH /polls/:pollId/close`, which sets `status` to `'closed'`. The application layer checks `status` on every vote submission and rejects votes to closed polls (`403 Forbidden`).
+> Polls are created with a default status of `'active'`. A poll can be closed by calling `PATCH /polls/:pollId/close`, which sets `status` to `'closed'`. The application layer checks `status` on every vote submission and rejects votes to closed polls (`403 Forbidden`).
 
 Answer
-- id: UUID PK
+- id: BIGINT PK
 - pollId: UUID FK Poll
-- UserId: UUID FK User
 - answer: string NON NULL
 - answeredAt: Date NON NULL
-- UNIQUE CONSTRAINT (userId, pollId)
 - Index on pollId
+
+Note: perhaps if user entity is introduced, we can use userId + pollId as surrogate ID for Answer table.
 
 # Deep Dives
 
 ## Security and Rate Limiting
-- All users need to sign up and have an account before answering or creating a poll
-- Auth with JWT — access and refresh tokens, userId extracted from JWT
-- Rate limit on APIGW, 10 answers/sec per user
+- Rate limit on APIGW per IP address / client connection to prevent abuse
 - Input validation and sanitization on all user-supplied fields (question, description, answer) to prevent XSS
 - Use parameterized queries / ORM to prevent SQL injection
 - CSRF protection on state-changing endpoints
+
+# Ignore (kept for posterity)
 
 ## High Availability
 - Increase redundancy, have more instances of poll service. If 1 instance goes down, still have multiple instances left to handle traffic
@@ -149,10 +139,12 @@ Answer
     - All poll service instances subscribe to channels for the polls their connected clients are watching
     - Subscribing instances push updates to their connected SSE clients
 - Connection management
-    - Each SSE connection is a long-lived HTTP connection. At 300K concurrent users, that is 300K open connections
-    - A single Node.js instance can handle 10K concurrent connections (conservative est) -> need 30 instances
+    - Each SSE connection is a long-lived HTTP connection. At 300K concurrent users, that requires maintaining 300K open connections.
+    - A single Node.js instance can comfortably handle 50K to 100K concurrent open connections
+    - Math: `300,000 connections / 50,000 per instance = 6 instances` (or `300,000 / 100,000 = 3 instances`). Thus, 3 to 6 Node.js instances are required.
 
 ## Scaling to Handle High Concurrent Users
+- Use sequential `BIGINT` (BIGSERIAL) PK for `Answer` table instead of random UUIDs to avoid B-Tree index fragmentation, cut key storage overhead in half (8 bytes vs 16 bytes), and maximize write throughput under high concurrency
 - Query optimization on DB: no `select *`, return only needed columns
 - Add appropriate index on frequently accessed columns like `pollId` in Answer table
 - Add read replicas to DB. Polling system has a high read-to-write ratio, est 100:1
@@ -166,7 +158,7 @@ Answer
 
 ## Capacity Estimates
 - 10K concurrent polls × 30 users = 300K concurrent users
-- Write load: each user votes once per poll. Bursty peak estimate — 300K votes over 10 minutes = 500 writes/sec -> manageable by a single write PostgreSQL primary
+- Write load: default expected usage is ~1 vote per user. Bursty peak estimate — 300K votes over 10 minutes = 500 writes/sec -> manageable by a single write PostgreSQL primary
 - Read load: 300K users viewing live results. With SSE, reads are push-based (no polling). Initial page load triggers `GET /polls/:pollId` + `GET /answers` → 600K requests at poll start, then SSE handles the rest
-- SSE connections: 300K long-lived connections across 30 instances
+- SSE connections: 300K long-lived connections across 3 to 6 instances (`300,000 / 50,000 = 6` to `300,000 / 100,000 = 3`)
 - Storage: 300K answers × 200 bytes each = 60MB per poll cycle -> minimal
