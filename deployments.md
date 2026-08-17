@@ -1,0 +1,7 @@
+- Frontend is deployed on vercel (https://aethelgard-voice.vercel.app/)
+- Backend is 'deployed' using ngrok (open only during demos)
+    - start docker desktop
+    - update backend .env value 
+    - run `docker compose up --build -d` in terminal
+    - run `ngrok http 3000`
+    - deployed frontend should be working
