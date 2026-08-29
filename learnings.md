@@ -1,0 +1,2 @@
+- The @types/node package provides TypeScript type definitions for Node.js's built-in APIs, global variables, and native modules.
+    - When you write TypeScript code that runs in Node.js, you frequently use built-in modules like fs (file system), path, http, or global variables like process.env and __dirname. Because Node.js is fundamentally written in JavaScript and C++, TypeScript has no native way of knowing what these modules are, what functions they contain, or what arguments those functions accept.
